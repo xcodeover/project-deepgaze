@@ -1,0 +1,74 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: deepgaze-backend
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    root: INFO
+    com.deepgaze: DEBUG
+    com.zaxxer.hikari: INFO
+
+deepgaze:
+  buffer:
+    capacity: 10000              # max snapshots retained for REST/AI consumption
+  scheduler:
+    worker-pool-size: 16         # concurrent collections in flight
+    collection-timeout-ms: 5000  # per-collection ceiling (CompletableFuture.orTimeout)
+
+  # Each target gets its own HikariCP pool and an independent scheduled tick.
+  #
+  # Three layers of timeout protect the worker pool from a hung target:
+  #   1. network.tcpConnectTimeoutMs / socketReadTimeoutMs  → driver-level (TCP/socket)
+  #   2. hikari.connectionTimeoutMs                         → Hikari pool wait
+  #   3. scheduler.collection-timeout-ms + setQueryTimeout  → per-statement
+  #
+  # Credentials inline for local testing only — for any non-dev environment,
+  # move to env vars: password: ${MARIA_PWD:}
+  targets:
+    - id: cointrader-mariadb
+      type: MARIADB
+      jdbc-url: jdbc:mariadb://192.168.0.71:3336/stocktrader_db
+      username: xstock
+      password: 'tjwns0130!@#'
+      poll-interval-ms: 1000
+      hikari:
+        maximum-pool-size: 4
+        minimum-idle: 2
+      network:
+        tcp-connect-timeout-ms: 5000   # → connectTimeout
+        socket-read-timeout-ms: 8000   # → socketTimeout
+
+#    - id: prod-oracle-1
+#      type: ORACLE
+#      jdbc-url: jdbc:oracle:thin:@//ora-host:1521/ORCL
+#      username: monitor
+#      password: ${ORACLE_PWD:}
+#      poll-interval-ms: 1000
+#      hikari:
+#        maximum-pool-size: 4
+#        minimum-idle: 2
+#      network:
+#        tcp-connect-timeout-ms: 5000   # → oracle.net.CONNECT_TIMEOUT
+#        socket-read-timeout-ms: 8000   # → oracle.net.READ_TIMEOUT / oracle.jdbc.ReadTimeout
+#
+#    - id: dev-mssql-1
+#      type: MSSQL
+#      jdbc-url: jdbc:sqlserver://mssql-host:1433;databaseName=master;encrypt=true;trustServerCertificate=true
+#      username: monitor
+#      password: ${MSSQL_PWD:}
+#      poll-interval-ms: 2000
+#      network:
+#        tcp-connect-timeout-ms: 5000   # → loginTimeout (converted to seconds)
+#        socket-read-timeout-ms: 8000   # → socketTimeout (millis)

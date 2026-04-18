@@ -1,0 +1,220 @@
+:root {
+  --bg:        #0f1115;
+  --panel:    #161922;
+  --panel-2:  #1d2230;
+  --border:   #262c3b;
+  --text:     #e6e9ef;
+  --muted:    #8a93a6;
+  --accent:   #4ea1ff;
+  --green:    #2dd4a4;
+  --yellow:   #f5b431;
+  --red:      #ef5a5a;
+  --grey:     #6b7280;
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    Ubuntu, Cantarell, "Helvetica Neue", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+}
+
+* { box-sizing: border-box; }
+
+body, html, #root { margin: 0; padding: 0; height: 100%; }
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100vh;
+}
+
+.app__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.app__title {
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  font-size: 18px;
+}
+
+.app__title small {
+  color: var(--muted);
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+.app__body {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  overflow: hidden;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 14px 12px;
+  overflow-y: auto;
+}
+
+.sidebar__heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 4px 8px 8px;
+}
+
+.target {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.target:hover { background: var(--panel-2); }
+
+.target--active {
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--accent);
+}
+
+.target__placeholder {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.main {
+  padding: 20px;
+  overflow-y: auto;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: min-content;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.card--full { grid-column: 1 / -1; }
+
+.card__title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.placeholder {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 30px 0;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--grey);
+  display: inline-block;
+}
+
+.status--live          .status__dot { background: var(--green);  box-shadow: 0 0 6px var(--green); }
+.status--connecting    .status__dot,
+.status--reconnecting  .status__dot { background: var(--yellow); animation: pulse 1.2s infinite ease-in-out; }
+.status--disconnected  .status__dot { background: var(--red); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+table.metric-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+table.metric-table th, table.metric-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+table.metric-table th {
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+}
+table.metric-table tr:hover td {
+  background: var(--panel-2);
+}
+
+.boundary {
+  margin: 40px auto;
+  max-width: 720px;
+  background: var(--panel);
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  padding: 20px;
+}
+.boundary__title {
+  color: var(--red);
+  font-weight: 600;
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.boundary__msg {
+  color: var(--text);
+  background: var(--panel-2);
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 320px;
+}
+.boundary__btn {
+  margin-top: 12px;
+  background: var(--accent);
+  color: var(--bg);
+  border: 0;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}

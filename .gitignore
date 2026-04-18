@@ -1,0 +1,122 @@
+# ===========================
+# OS / Editor
+# ===========================
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# IDE - Eclipse
+.project
+.classpath
+.settings/
+.factorypath
+.apt_generated/
+bin/
+
+# IDE - VS Code
+.vscode/
+*.code-workspace
+
+# IDE - NetBeans
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# ===========================
+# Logs / Temp
+# ===========================
+*.log
+logs/
+*.tmp
+*.bak
+*.pid
+*.seed
+*.pid.lock
+
+# ===========================
+# Env / Secrets
+# ===========================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.jks
+secrets/
+
+# ===========================
+# Backend - Java / Gradle / Spring Boot
+# ===========================
+backend/build/
+backend/bin/
+backend/.gradle/
+backend/out/
+backend/!gradle/wrapper/gradle-wrapper.jar
+
+# Gradle general
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# Compiled class / package files
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+!gradle/wrapper/gradle-wrapper.jar
+!backend/gradle/wrapper/gradle-wrapper.jar
+
+# Spring Boot
+HELP.md
+application-local.yml
+application-local.properties
+
+# ===========================
+# Frontend - Node / Vite / React
+# ===========================
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/coverage/
+frontend/.eslintcache
+
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+
+# ===========================
+# Claude Code (local)
+# ===========================
+.claude/
+
+# ===========================
+# Misc
+# ===========================
+*.orig
+*.rej
+.cache/

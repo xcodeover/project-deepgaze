@@ -1,0 +1,68 @@
+plugins {
+    id 'org.springframework.boot' version '3.3.4'
+    id 'io.spring.dependency-management' version '1.1.6'
+    id 'java'
+}
+
+group = 'com.deepgaze'
+version = '0.1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // --- Spring Boot core (WebFlux for non-blocking REST + SSE) ---
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+    implementation 'org.springframework.boot:spring-boot-starter-websocket'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // --- Connection pooling (HikariCP is bundled with spring-boot-starter-jdbc) ---
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'com.zaxxer:HikariCP:5.1.0'
+
+    // --- MyBatis (data-access for collector queries). We exclude
+    // MybatisAutoConfiguration in DeepGazeApplication and build one
+    // SqlSessionFactory PER TARGET in MyBatisFactoryRegistry — the starter
+    // assumes one DataSource, but we run N pools (one per monitored DB).
+    implementation 'org.mybatis.spring.boot:mybatis-spring-boot-starter:3.0.3'
+
+    // --- JDBC drivers for each target DB ---
+    runtimeOnly 'com.oracle.database.jdbc:ojdbc11:23.5.0.24.07'
+    runtimeOnly 'org.mariadb.jdbc:mariadb-java-client:3.4.1'
+    runtimeOnly 'com.mysql:mysql-connector-j:8.4.0'
+    runtimeOnly 'com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre11'
+
+    // --- Reactive / async helpers ---
+    implementation 'io.projectreactor:reactor-core'
+
+    // --- JSON & YAML config binding ---
+    implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
+    implementation 'com.fasterxml.jackson.module:jackson-module-parameter-names'
+
+    // --- Logging ---
+    implementation 'org.slf4j:slf4j-api'
+
+    // --- Lombok (compile-time, optional but reduces boilerplate) ---
+    compileOnly 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+    // --- Tests ---
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.projectreactor:reactor-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+bootJar {
+    archiveFileName = 'deepgaze-backend.jar'
+}
