@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import ResponsiveECharts from './ResponsiveECharts.jsx';
 import { pick } from '../../lib/rowAccess.js';
 
 const NAME_KEYS  = ['name', 'metric_name', 'variable_name', 'counter_name'];
@@ -22,9 +22,9 @@ export default function CounterChart({ snapshots, title = 'Counters', maxSeries 
   }
 
   return (
-    <ReactECharts
+    <ResponsiveECharts
       option={option}
-      style={{ height: 280 }}
+      style={{ height: '100%', width: '100%' }}
       notMerge
       lazyUpdate
     />
@@ -54,12 +54,16 @@ function buildOption(snapshots, title, maxSeries) {
 
   return {
     backgroundColor: 'transparent',
-    title: { text: title, left: 'left', textStyle: { color: '#e6e9ef', fontSize: 13, fontWeight: 500 } },
+    title: { text: title, left: 'left', textStyle: { color: '#e6e9ef', fontSize: 11, fontWeight: 500 } },
     tooltip: { trigger: 'axis' },
-    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#8a93a6' } },
-    grid: { left: 60, right: 20, top: 40, bottom: 40 },
-    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6' } },
-    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6' }, splitLine: { lineStyle: { color: '#262c3b' } } },
+    legend: {
+      type: 'scroll', top: 2, right: 8,
+      itemWidth: 10, itemHeight: 8, itemGap: 10,
+      textStyle: { color: '#8a93a6', fontSize: 10 },
+    },
+    grid: { left: 52, right: 12, top: 28, bottom: 26 },
+    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6', fontSize: 10 } },
+    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6', fontSize: 10 }, splitLine: { lineStyle: { color: '#262c3b' } } },
     series,
     animation: false,
   };

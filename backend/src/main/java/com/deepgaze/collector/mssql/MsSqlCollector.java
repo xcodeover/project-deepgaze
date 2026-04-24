@@ -2,40 +2,52 @@ package com.deepgaze.collector.mssql;
 
 import com.deepgaze.collector.Collector;
 import com.deepgaze.collector.JdbcUtils;
+import com.deepgaze.collector.RatiosSnapshotBuilder;
 import com.deepgaze.config.DeepGazeProperties;
+import com.deepgaze.config.MyBatisFactoryRegistry;
 import com.deepgaze.model.DbTargetConfig;
 import com.deepgaze.model.DbType;
 import com.deepgaze.model.MetricSnapshot;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.ibatis.session.SqlSession;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * SQL Server metric collection — uses only DMVs, all of which are in-memory.
- * The CROSS APPLY to sys.dm_exec_sql_text is a table-valued function call
- * (not a heavy join) and is the canonical lightweight way to attach SQL text
- * to query stats; bounded to TOP 10 keeps it cheap.
+ *
+ * Hybrid collection strategy: the engine-native perfCounters group is emitted
+ * via raw JDBC (its shape is consumed directly by the generic counter tiles),
+ * while the five unified drill-down groups ({@code processlist}, {@code blockers},
+ * {@code activeSessions}, {@code topDigests}, {@code slowQueries}) go through
+ * {@link MsSqlMapper} so their column contracts match MariaDB's exactly.
  */
 @Slf4j
 @Component
 public class MsSqlCollector implements Collector {
 
     private final int queryTimeoutSec;
+    private final MyBatisFactoryRegistry factories;
 
-    public MsSqlCollector(DeepGazeProperties props) {
+    public MsSqlCollector(DeepGazeProperties props, MyBatisFactoryRegistry factories) {
         this.queryTimeoutSec = JdbcUtils.toQueryTimeoutSec(props.scheduler().collectionTimeoutMs());
+        this.factories = factories;
     }
 
     @Override
     public DbType supports() { return DbType.MSSQL; }
 
-    /** Whitelisted in-memory perf counters. */
+    /** Whitelisted in-memory perf counters. Engine-native shape. */
     private static final String PERF_COUNTERS_SQL = """
             SELECT RTRIM(object_name)    AS object_name,
                    RTRIM(counter_name)   AS counter_name,
@@ -51,6 +63,7 @@ public class MsSqlCollector implements Collector {
                'Active Transactions',
                'Page life expectancy',
                'Buffer cache hit ratio',
+               'Buffer cache hit ratio base',
                'Lock Waits/sec',
                'Processes blocked',
                'Logins/sec',
@@ -58,85 +71,70 @@ public class MsSqlCollector implements Collector {
              )
             """;
 
-    /** Active user requests (session_id > 50 skips system sessions). */
-    private static final String REQUESTS_SQL = """
-            SELECT session_id,
-                   request_id,
-                   start_time,
-                   status,
-                   command,
-                   blocking_session_id,
-                   wait_type,
-                   wait_time,
-                   cpu_time,
-                   total_elapsed_time,
-                   reads,
-                   writes,
-                   logical_reads
-              FROM sys.dm_exec_requests
-             WHERE session_id > 50
-            """;
-
-    /** User sessions only. */
-    private static final String SESSIONS_SQL = """
-            SELECT session_id,
-                   login_name,
-                   host_name,
-                   program_name,
-                   status,
-                   cpu_time,
-                   memory_usage,
-                   total_elapsed_time,
-                   last_request_start_time
-              FROM sys.dm_exec_sessions
-             WHERE is_user_process = 1
-            """;
-
-    /**
-     * Top 10 by cumulative elapsed time, with SQL text via CROSS APPLY.
-     * The SUBSTRING math extracts only the executed statement (not the whole batch).
-     */
-    private static final String TOP_SQL = """
-            SELECT TOP 10
-                   qs.execution_count,
-                   qs.total_worker_time,
-                   qs.total_elapsed_time,
-                   qs.total_logical_reads,
-                   qs.last_execution_time,
-                   SUBSTRING(st.text,
-                             (qs.statement_start_offset / 2) + 1,
-                             ((CASE qs.statement_end_offset
-                                 WHEN -1 THEN DATALENGTH(st.text)
-                                 ELSE qs.statement_end_offset
-                               END - qs.statement_start_offset) / 2) + 1
-                   ) AS sql_text
-              FROM sys.dm_exec_query_stats qs
-              CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-             ORDER BY qs.total_elapsed_time DESC
-            """;
-
     @Override
     public List<MetricSnapshot> collect(DbTargetConfig target, DataSource ds) throws SQLException {
-        List<MetricSnapshot> out = new ArrayList<>(4);
+        List<MetricSnapshot> out = new ArrayList<>(6);
+
+        // Raw-JDBC group: engine-native counter shape.
         try (Connection c = ds.getConnection()) {
-            runOne(target, c, "perfCounters", PERF_COUNTERS_SQL).ifPresent(out::add);
-            runOne(target, c, "requests",     REQUESTS_SQL).ifPresent(out::add);
-            runOne(target, c, "sessions",     SESSIONS_SQL).ifPresent(out::add);
-            runOne(target, c, "topSql",       TOP_SQL).ifPresent(out::add);
+            Optional<MetricSnapshot> perf = runJdbc(target, c, "perfCounters", PERF_COUNTERS_SQL);
+            perf.ifPresent(out::add);
+
+            // `ratios` — unified cache/buffer health derived from the perf
+            // counters we just queried (PLE, Buffer Cache Hit Ratio).
+            perf.map(s -> RatiosSnapshotBuilder.forMsSql(target, s.rows()))
+                .ifPresent(r -> { if (r != null) out.add(r); });
         } catch (SQLException e) {
             log.warn("MSSQL connection acquisition failed: target={} state={} code={} msg={}",
                     target.id(), e.getSQLState(), e.getErrorCode(), e.getMessage());
             throw e;
         }
+
+        // Mapper-backed groups: unified drill-down shape that must match
+        // MariaDB's column contract so the Processlist, Lock-Tree, ASH and
+        // Query-Performance tiles render identically across engines.
+        SqlSessionFactory factory = factories.factoryFor(target.id()).orElse(null);
+        if (factory == null) {
+            log.warn("MSSQL unified groups skipped: no SqlSessionFactory for target {}", target.id());
+            return out;
+        }
+        try (SqlSession session = factory.openSession(true)) {
+            MsSqlMapper m = session.getMapper(MsSqlMapper.class);
+            runMapper(target, "processlist",    m::selectProcesslistTop).ifPresent(out::add);
+            runMapper(target, "blockers",       m::selectBlockers).ifPresent(out::add);
+            runMapper(target, "activeSessions", m::selectActiveSessions).ifPresent(out::add);
+            runMapper(target, "topWaits",       m::selectTopWaits).ifPresent(out::add);
+            runMapper(target, "topDigests",     m::selectTopDigests).ifPresent(out::add);
+            runMapper(target, "slowQueries",    m::selectSlowQueries).ifPresent(out::add);
+            runMapper(target, "dbSaturation",   m::selectDbSaturation).ifPresent(out::add);
+        } catch (Exception e) {
+            log.warn("MSSQL mapper session failed: target={} msg={}", target.id(), e.getMessage());
+        }
+
         return out;
     }
 
-    private Optional<MetricSnapshot> runOne(DbTargetConfig target, Connection c, String group, String sql) {
+    private Optional<MetricSnapshot> runJdbc(DbTargetConfig target, Connection c, String group, String sql) {
         try {
             return Optional.of(JdbcUtils.runQuery(target, c, queryTimeoutSec, group, sql));
         } catch (SQLException e) {
             log.warn("MSSQL query failed: target={} group={} state={} code={} msg={}",
                     target.id(), group, e.getSQLState(), e.getErrorCode(), e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<MetricSnapshot> runMapper(
+            DbTargetConfig target,
+            String group,
+            Supplier<List<Map<String, Object>>> query) {
+        try {
+            List<Map<String, Object>> rows = query.get();
+            return Optional.of(new MetricSnapshot(
+                    target.id(), target.displayName(), target.type(), Instant.now(), group, rows));
+        } catch (Exception e) {
+            log.warn("MSSQL mapper query failed: target={} group={} msg={}",
+                    target.id(), group, e.getMessage());
             return Optional.empty();
         }
     }

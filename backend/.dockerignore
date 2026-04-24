@@ -1,0 +1,31 @@
+# Local build artefacts — rebuilt inside the container.
+build/
+.gradle/
+out/
+bin/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Runtime state — the SQLite history lives in a named volume, not the image.
+data/
+logs/
+
+# Local secrets never belong in an image. Mount them at /app/application-local.yml
+# via docker-compose instead.
+application-local.yml
+*.env
+.env
+.env.*
+
+# Docker meta
+Dockerfile
+.dockerignore
+
+# Git noise
+.git/
+.gitignore
+.gitattributes

@@ -7,6 +7,12 @@ spring:
   jackson:
     serialization:
       write-dates-as-timestamps: false
+  # Optional per-developer secrets file — not checked in (.gitignore line 86).
+  # Provides MARIA_PWD / TELEGRAM_TOKEN / TELEGRAM_CHAT_ID. Env vars of the
+  # same names also work and take precedence. Resolved from the JVM working
+  # dir, which for both IDE Boot runs and `./gradlew bootRun` is backend/.
+  config:
+    import: optional:file:./application-local.yml
 
 management:
   endpoints:
@@ -19,13 +25,384 @@ logging:
     root: INFO
     com.deepgaze: DEBUG
     com.zaxxer.hikari: INFO
+    # Silences "Resolved [AsyncRequestNotUsableException: ... Broken pipe]" WARNs
+    # that fire every time an SSE client tab closes. The underlying cause is
+    # already swallowed by ClientDisconnectNoiseFilter for paths that attach the
+    # throwable; this logger prints a formatted message without attaching the
+    # throwable, so the filter can't catch it — level bump is the clean fix.
+    org.springframework.web.servlet.mvc.support.DefaultHandlerExceptionResolver: ERROR
 
 deepgaze:
   buffer:
-    capacity: 10000              # max snapshots retained for REST/AI consumption
+    capacity: 35000              # ~1h of history: 1 target × 8 groups × 3600s + margin
   scheduler:
     worker-pool-size: 16         # concurrent collections in flight
     collection-timeout-ms: 5000  # per-collection ceiling (CompletableFuture.orTimeout)
+    # --- Slow queue: 60s cadence for expensive dictionary queries
+    # (tablespace usage, FRA fill, tempdb space, transaction-log space). Runs
+    # on a dedicated worker pool so a stall in a dictionary query cannot delay
+    # the fast infra-metric loop.
+    slow-interval-ms: 60000
+    slow-worker-pool-size: 4
+    slow-collection-timeout-ms: 10000
+
+  # ---- Storage Saturation thresholds -----------------------------------
+  # Applied server-side; API consumers read the classified Severity enum.
+  storage-saturation:
+    warn-pct: 80.0
+    crit-pct: 90.0
+
+  # ---- Security (target-store encryption) ------------------------------
+  # AES-GCM key for on-disk target passwords. MUST be set in any environment
+  # where target CRUD is used; PasswordCipher refuses to encrypt with a blank
+  # key. Legacy plaintext rows stored from a previous (unkeyed) run are still
+  # readable — the prefix-based decode is backwards compatible — but new
+  # writes require the key. SHA-256'd internally to a 32-byte AES-256 key, so
+  # length and entropy of the raw value are what matter.
+  security:
+    encryption-key: ${DEEPGAZE_SECRET_KEY:}
+
+  # ---- Target Store (V2 fleet management) ------------------------------
+  # Control-plane SQLite file that holds the editable target list. Kept
+  # separate from the V9 history DB (different access pattern, different
+  # retention). First boot with an empty file seeds from the yaml `targets:`
+  # block below via TargetBootstrapRunner; subsequent boots read only from
+  # this file — yaml target edits are ignored once the DB is populated.
+  target-store:
+    db-path: ./data/deepgaze-targets.db
+
+  # ---- V9 Time Machine (historical persistence) -----------------------
+  # Embedded SQLite (WAL mode). One .db file holds every MetricSnapshot the
+  # broadcaster emits so the UI can rewind to any point inside `retention-hours`.
+  # The writer is async/batched — reactor onNext → bounded queue → dedicated
+  # writer thread → batch INSERT — so a slow disk can never stall SSE fan-out.
+  # Overflow policy is drop-oldest: bursts discard the stalest history rather
+  # than back-pressure the live stream.
+  history:
+    enabled: true
+    db-path: ./data/deepgaze-history.db
+    retention-hours: 48          # ~700 MB on the reference 3-target config
+    batch-size: 200              # flush when this many snapshots are queued …
+    batch-interval-ms: 500       # … or when this much time has elapsed
+    queue-capacity: 10000        # drop-oldest when full
+    purge-interval-minutes: 60   # how often DELETE WHERE ts_epoch_ms < cutoff runs
+
+  # ---- Alerting --------------------------------------------------------
+  # Declarative threshold rules evaluated against the live MetricStream.
+  # State machine: OK → PENDING → FIRING → OK. A rule must stay breached for
+  # `for-seconds` before transitioning to FIRING, so a single noisy tick
+  # doesn't page anyone.
+  #
+  # Rule shape:
+  #   id:           stable identifier (used in events + webhook payloads)
+  #   target:       null = any target, else exact targetId
+  #   group:        which metricGroup to read (status, blockers, sessions…)
+  #   metric:       variable name within the group's rows (for kv groups like
+  #                 status); omit for a row-count rule (e.g. blockers.size > 0)
+  #   op:           GT | GTE | LT | LTE | EQ
+  #   threshold:    numeric comparison
+  #   for-seconds:  omit to use defaultForSeconds
+  #   severity:     INFO | WARNING | CRITICAL
+  alerts:
+    default-for-seconds: 30
+    event-history-capacity: 500
+    rules:
+      - id: blockers-present
+        target: stocktrader-db
+        group: blockers
+        op: GT
+        threshold: 0
+        for-seconds: 0          # fire immediately — any blocker is worth seeing
+        severity: CRITICAL
+        description: Blocking session detected
+      - id: high-threads-running
+        target: stocktrader-db
+        group: status
+        metric: THREADS_RUNNING
+        op: GT
+        threshold: 50
+        for-seconds: 30
+        severity: WARNING
+        description: Running-thread count elevated
+      - id: aborted-connects-growing
+        target: stocktrader-db
+        group: status
+        metric: ABORTED_CONNECTS
+        op: GT
+        threshold: 10
+        for-seconds: 60
+        severity: INFO
+        description: Aborted-connect counter climbed past baseline
+      # -- Host alerts (RemoteHostCollector groups) --
+      # `metric` matches the direct column in the emitted row. The extractor
+      # reduces multi-row groups (hostDisk has one row per device) with MAX,
+      # so a single rule covers "any disk struggling".
+      - id: host-iowait-high
+        target: stocktrader-db
+        group: hostCpu
+        metric: iowait_pct
+        op: GT
+        threshold: 10
+        for-seconds: 30
+        severity: WARNING
+        description: Host CPU spent sustained time waiting on disk I/O
+      - id: host-memory-saturated
+        target: stocktrader-db
+        group: hostMemory
+        metric: used_pct
+        op: GT
+        threshold: 90
+        for-seconds: 60
+        severity: WARNING
+        description: Host memory utilisation above 90%
+      - id: host-swap-active
+        target: stocktrader-db
+        group: hostMemory
+        metric: swap_used_pct
+        op: GT
+        threshold: 50
+        for-seconds: 30
+        severity: CRITICAL
+        description: Host is actively swapping — real memory exhausted
+      - id: host-disk-saturated
+        target: stocktrader-db
+        group: hostDisk
+        metric: util_pct
+        op: GT
+        threshold: 85
+        for-seconds: 30
+        severity: WARNING
+        description: At least one host disk is running above 85% utilisation
+      # -- "Big 3" fatal outage precursors --
+      # `dbSaturation` is a derived group emitted by MariaDbCollector that
+      # cross-references Threads_connected against max_connections. Session
+      # exhaustion is the #1 cause of "database is down" pages.
+      - id: db-session-high
+        target: stocktrader-db
+        group: dbSaturation
+        metric: session_utilization_pct
+        op: GT
+        threshold: 85
+        for-seconds: 60
+        severity: CRITICAL
+        description: Connection pool heading toward max_connections — app will start failing
+      # Generic filesystem rule — fires on ANY mount above 90%, which covers
+      # the common "data and binlogs share /var/lib/mysql" layout.
+      - id: db-filesystem-full
+        target: stocktrader-db
+        group: hostFilesystem
+        metric: used_pct
+        op: GT
+        threshold: 90
+        for-seconds: 30
+        severity: CRITICAL
+        description: A host filesystem is above 90% — InnoDB can stop accepting writes
+      # Targeted rules — uncomment when data and binlogs live on separate mounts.
+      # The `label` field pins each rule to a specific mountpoint; the extractor
+      # reads used_pct from that row only instead of MAX-ing across all mounts.
+#      - id: db-data-full
+#        target: stocktrader-db
+#        group: hostFilesystem
+#        label: "/var/lib/mysql"
+#        metric: used_pct
+#        op: GT
+#        threshold: 90
+#        for-seconds: 30
+#        severity: CRITICAL
+#        description: InnoDB data filesystem above 90% — writes will stall imminently
+#      - id: db-binlog-full
+#        target: stocktrader-db
+#        group: hostFilesystem
+#        label: "/var/log/mysql"
+#        metric: used_pct
+#        op: GT
+#        threshold: 90
+#        for-seconds: 30
+#        severity: CRITICAL
+#        description: Binlog filesystem above 90% — replication/purge will fail
+      # -- Silent killer: forgotten BEGIN statements --
+      # Reads the `oldest-open-trx-age-sec` Business Scoreboard KPI (below).
+      # A long-running transaction holds row locks, bloats the undo log, and
+      # stalls the InnoDB purge thread — the DB slows linearly until someone
+      # finds it. Paging at 60s catches it long before symptoms surface.
+      - id: long-running-trx
+        target: stocktrader-db
+        group: businessMetrics
+        metric: oldest-open-trx-age-sec
+        op: GT
+        threshold: 60
+        for-seconds: 30
+        severity: WARNING
+        description: Open transaction older than 60s — undo log will start bloating
+
+      # -- Oracle rules (v$sysstat counters) ---------------------------------
+      # sysstat rows are {name, value}. The kv extractor matches `metric` against
+      # the `name` column and reads the cumulative counter from `value`. Counters
+      # are since-instance-start — thresholds are calibrated to "something is
+      # actually wrong in the lab", not steady-state noise.
+      - id: oracle-deadlocks
+        target: oracle-prod
+        group: sysstat
+        metric: enqueue deadlocks
+        op: GT
+        threshold: 0
+        for-seconds: 0       # any deadlock is worth paging on
+        severity: CRITICAL
+        description: Oracle detected a deadlock — one transaction was chosen as victim
+      - id: oracle-user-rollbacks-growing
+        target: oracle-prod
+        group: sysstat
+        metric: user rollbacks
+        op: GT
+        threshold: 100
+        for-seconds: 60
+        severity: WARNING
+        description: Sustained user-initiated rollbacks — likely app-side retry storm
+      - id: oracle-parse-failures
+        target: oracle-prod
+        group: sysstat
+        metric: parse count (failures)
+        op: GT
+        threshold: 50
+        for-seconds: 60
+        severity: WARNING
+        description: Parse failures climbing — stale cursors or bad SQL from a client
+      - id: oracle-sorts-disk
+        target: oracle-prod
+        group: sysstat
+        metric: sorts (disk)
+        op: GT
+        threshold: 100
+        for-seconds: 30
+        severity: WARNING
+        description: Disk sorts occurring — PGA aggregate target likely too small
+      - id: oracle-blockers-present
+        target: oracle-prod
+        group: blockers
+        op: GT
+        threshold: 0
+        for-seconds: 0
+        severity: CRITICAL
+        description: Oracle blocking session detected
+
+      # -- MSSQL rules (sys.dm_os_performance_counters) ---------------------
+      # perfCounters rows are {object_name, counter_name, instance_name,
+      # cntr_value, cntr_type}. MetricExtractor's kv path now honours the
+      # counter_name / cntr_value pair so these rules work identically to
+      # MariaDB's `status` kv rules. Metric names match sys.dm_os_performance_counters
+      # exactly (case-insensitive).
+      - id: mssql-processes-blocked
+        target: mssql-master
+        group: perfCounters
+        metric: Processes blocked
+        op: GT
+        threshold: 0
+        for-seconds: 0       # any blocked process warrants an immediate look
+        severity: CRITICAL
+        description: SQL Server has blocked processes — head of a blocking chain is waiting
+      - id: mssql-page-life-expectancy-low
+        target: mssql-master
+        group: perfCounters
+        metric: Page life expectancy
+        op: LT
+        threshold: 300
+        for-seconds: 60
+        severity: WARNING
+        description: Buffer-pool PLE below 300s — memory pressure, pages churning out of cache
+      - id: mssql-lock-waits-sustained
+        target: mssql-master
+        group: perfCounters
+        metric: Lock Waits/sec
+        op: GT
+        threshold: 500
+        for-seconds: 60
+        severity: WARNING
+        description: Lock-wait rate elevated — contention likely blocking many queries
+      - id: mssql-blockers-present
+        target: mssql-master
+        group: blockers
+        op: GT
+        threshold: 0
+        for-seconds: 0
+        severity: CRITICAL
+        description: SQL Server blocking session detected
+    # Telegram delivery is owned by TelegramNotifier + NotificationConfigService
+    # (Settings → Notifications UI). Do not duplicate it as a static webhook
+    # here; that path bypasses the UI enable toggle.
+    webhooks: []
+
+  # ---- Business Scoreboard --------------------------------------------
+  # User-defined KPIs shown as big-number cards above the tile grid.
+  # Each query runs on the target's existing HikariCP pool at its own
+  # poll-interval — independent of the 1s infra-metric tick — so an
+  # expensive aggregate can't slow the dashboard.
+  #
+  # The SQL must return a single row with a single numeric column (extra
+  # columns are ignored). Trusted config input — do not expose this to
+  # untrusted users.
+  #
+  # Supported `format` values drive frontend rendering:
+  #   number    → 1,234.56
+  #   integer   → 1,234
+  #   currency  → $1,234.56
+  #   percent   → 12.3%
+  business-metrics:
+    - id: active-sessions
+      target: stocktrader-db
+      label: Active Sessions
+      sql: SELECT COUNT(*) FROM information_schema.processlist WHERE COMMAND <> 'Sleep'
+      poll-interval-ms: 2000
+      format: integer
+    - id: open-transactions
+      target: stocktrader-db
+      label: Open Transactions
+      sql: SELECT COUNT(*) FROM information_schema.INNODB_TRX
+      poll-interval-ms: 2000
+      format: integer
+    - id: buffer-pool-used-mb
+      target: stocktrader-db
+      label: Buffer Pool Used (MB)
+      sql: >-
+        SELECT ROUND(
+                 (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS
+                   WHERE VARIABLE_NAME = 'Innodb_buffer_pool_pages_data')
+               * (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS
+                   WHERE VARIABLE_NAME = 'Innodb_page_size') / 1024 / 1024, 1)
+      poll-interval-ms: 5000
+      format: number
+    # Oldest open transaction — feeds the `long-running-trx` alert rule above.
+    # COALESCE returns 0 when INNODB_TRX is empty (idle DB), so the KPI shows
+    # "0" instead of "—". NOW() evaluates server-side → no clock-skew concerns.
+    - id: oldest-open-trx-age-sec
+      target: stocktrader-db
+      label: Oldest Open Trx (s)
+      sql: >-
+        SELECT COALESCE(TIMESTAMPDIFF(SECOND, MIN(trx_started), NOW()), 0)
+        FROM information_schema.INNODB_TRX
+      poll-interval-ms: 5000
+      format: integer
+
+  # ---- Active Response (Kill Session) -------------------------------------
+  # The ONLY feature that can mutate a target DB from the UI. Disabled by
+  # default — both the top-level auth-token AND a per-target `ops` credential
+  # must be set before the `/api/ops/**` endpoint will serve a request.
+  #
+  # Setup:
+  #   1. Create a dedicated low-privilege ops user on the DB. For MariaDB:
+  #        CREATE USER 'deepgaze_ops'@'%' IDENTIFIED BY '<strong-password>';
+  #        GRANT PROCESS, CONNECTION_ADMIN ON *.* TO 'deepgaze_ops'@'%';
+  #      (Oracle: ALTER SYSTEM KILL SESSION; MSSQL: ALTER ANY CONNECTION.)
+  #   2. Put both secrets in backend/application-local.yml:
+  #        DEEPGAZE_OPS_TOKEN: 'long-random-string'
+  #        MARIA_OPS_PWD:      '<strong-password>'
+  #   3. Restart the backend. Log line `Initialized ops HikariCP pool …` means
+  #      the feature is live for that target.
+  #
+  # The token is what the frontend sends as the `X-Deepgaze-Auth` header.
+  # Blank (the default) makes OpsAuthFilter return 503 for every call, so a
+  # misconfigured install cannot silently expose mutation capability.
+  ops:
+    auth-token: ${DEEPGAZE_OPS_TOKEN:}
 
   # Each target gets its own HikariCP pool and an independent scheduled tick.
   #
@@ -34,14 +411,16 @@ deepgaze:
   #   2. hikari.connectionTimeoutMs                         → Hikari pool wait
   #   3. scheduler.collection-timeout-ms + setQueryTimeout  → per-statement
   #
-  # Credentials inline for local testing only — for any non-dev environment,
-  # move to env vars: password: ${MARIA_PWD:}
+  # MARIA_PWD comes from application-local.yml or the environment. No default —
+  # startup fails loudly if neither source provides it, which is the behaviour
+  # we want on a fresh clone so the missing secret is obvious.
   targets:
-    - id: cointrader-mariadb
+    - id: stocktrader-db
+      name: "MariaDB (StockTrader)"
       type: MARIADB
       jdbc-url: jdbc:mariadb://192.168.0.71:3336/stocktrader_db
       username: xstock
-      password: 'tjwns0130!@#'
+      password: ${MARIA_PWD}
       poll-interval-ms: 1000
       hikari:
         maximum-pool-size: 4
@@ -49,26 +428,61 @@ deepgaze:
       network:
         tcp-connect-timeout-ms: 5000   # → connectTimeout
         socket-read-timeout-ms: 8000   # → socketTimeout
+      # Uncomment to observe the ACTUAL DB host instead of the backend JVM's host.
+      # When set, RemoteHostCollector scrapes this Prometheus text endpoint every
+      # 2s and fully replaces the local OSHI feed for this target. Allowlist:
+      # node_cpu_seconds_total, node_memory_*, node_disk_*. Install node_exporter
+      # on the DB host (single static binary, :9100 default) to light this up.
+      # host-exporter-url: http://192.168.0.71:9100/metrics
+      # Ops credential — used ONLY by KillCommandService. Leave blank (or omit
+      # the whole block) to keep the Kill Session feature disabled for this
+      # target. See the top-level `ops:` block above for the DDL.
+      ops:
+        username: deepgaze_ops
+        password: ${MARIA_OPS_PWD:}
 
-#    - id: prod-oracle-1
-#      type: ORACLE
-#      jdbc-url: jdbc:oracle:thin:@//ora-host:1521/ORCL
-#      username: monitor
-#      password: ${ORACLE_PWD:}
-#      poll-interval-ms: 1000
-#      hikari:
-#        maximum-pool-size: 4
-#        minimum-idle: 2
-#      network:
-#        tcp-connect-timeout-ms: 5000   # → oracle.net.CONNECT_TIMEOUT
-#        socket-read-timeout-ms: 8000   # → oracle.net.READ_TIMEOUT / oracle.jdbc.ReadTimeout
-#
-#    - id: dev-mssql-1
-#      type: MSSQL
-#      jdbc-url: jdbc:sqlserver://mssql-host:1433;databaseName=master;encrypt=true;trustServerCertificate=true
-#      username: monitor
-#      password: ${MSSQL_PWD:}
-#      poll-interval-ms: 2000
-#      network:
-#        tcp-connect-timeout-ms: 5000   # → loginTimeout (converted to seconds)
-#        socket-read-timeout-ms: 8000   # → socketTimeout (millis)
+    - id: oracle-prod
+      name: "Oracle (XEPDB1)"
+      type: ORACLE
+      jdbc-url: jdbc:oracle:thin:@//192.168.0.71:1521/XEPDB1
+      # Least-privilege account: CREATE SESSION + SELECT ANY DICTIONARY.
+      username: deepgaze_monitor
+      password: ${ORACLE_PWD}
+      poll-interval-ms: 1000
+      hikari:
+        maximum-pool-size: 4
+        minimum-idle: 2
+      network:
+        tcp-connect-timeout-ms: 5000   # → oracle.net.CONNECT_TIMEOUT
+        socket-read-timeout-ms: 8000   # → oracle.net.READ_TIMEOUT / oracle.jdbc.ReadTimeout
+      # Ops credential — used ONLY by KillCommandService. Leave ORACLE_OPS_PWD
+      # unset to keep Kill Session disabled for this target.
+      #   CREATE USER deepgaze_ops IDENTIFIED BY "<strong-password>";
+      #   GRANT CREATE SESSION, ALTER SYSTEM TO deepgaze_ops;
+      #   GRANT SELECT ANY DICTIONARY TO deepgaze_ops;  -- reads v$session for pre-kill lookup
+      ops:
+        username: deepgaze_ops
+        password: ${ORACLE_OPS_PWD:}
+
+    - id: mssql-master
+      name: "MS SQL Server (master)"
+      type: MSSQL
+      jdbc-url: jdbc:sqlserver://192.168.0.71:1433;databaseName=master;encrypt=true;trustServerCertificate=true
+      # Least-privilege account: CONNECT SQL + VIEW SERVER STATE (+ VIEW ANY DEFINITION).
+      username: deepgaze_monitor
+      password: ${MSSQL_PWD}
+      poll-interval-ms: 2000
+      hikari:
+        maximum-pool-size: 4
+        minimum-idle: 2
+      network:
+        tcp-connect-timeout-ms: 5000   # → loginTimeout (converted to seconds)
+        socket-read-timeout-ms: 8000   # → socketTimeout (millis)
+      # Ops credential — used ONLY by KillCommandService. Leave MSSQL_OPS_PWD
+      # unset to keep Kill Session disabled for this target.
+      #   CREATE LOGIN deepgaze_ops WITH PASSWORD = '<strong-password>';
+      #   GRANT ALTER ANY CONNECTION TO [deepgaze_ops];
+      #   GRANT VIEW SERVER STATE TO [deepgaze_ops];    -- reads dm_exec_sessions for pre-kill lookup
+      ops:
+        username: deepgaze_ops
+        password: ${MSSQL_OPS_PWD:}

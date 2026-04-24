@@ -24,6 +24,14 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
+    // --- Security: stateless JWT auth for the /api/** surface ---
+    // spring-boot-starter-security picks the reactive flavour automatically
+    // when spring-boot-starter-webflux is on the classpath.
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+    runtimeOnly    'io.jsonwebtoken:jjwt-impl:0.12.6'
+    runtimeOnly    'io.jsonwebtoken:jjwt-jackson:0.12.6'
+
     // --- Connection pooling (HikariCP is bundled with spring-boot-starter-jdbc) ---
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
     implementation 'com.zaxxer:HikariCP:5.1.0'
@@ -40,8 +48,20 @@ dependencies {
     runtimeOnly 'com.mysql:mysql-connector-j:8.4.0'
     runtimeOnly 'com.microsoft.sqlserver:mssql-jdbc:12.8.1.jre11'
 
+    // --- Embedded history store (V9 Time Machine) ---
+    // Pure-Java SQLite driver (xerial), WAL mode for concurrent reads while
+    // the writer thread batches inserts. One .db file at deepgaze.history.db-path.
+    implementation 'org.xerial:sqlite-jdbc:3.46.1.0'
+
     // --- Reactive / async helpers ---
     implementation 'io.projectreactor:reactor-core'
+
+    // --- OS / hardware metrics (CPU iowait, memory+swap, per-disk I/O).
+    // Pure Java + JNA; no native agent needed. Used by HostMetricsCollector
+    // to fuel the Infrastructure Hub tile on the dashboard. Observes the
+    // BACKEND host — useful for co-located monitoring or as the baseline
+    // read on the process running the collectors.
+    implementation 'com.github.oshi:oshi-core:6.6.5'
 
     // --- JSON & YAML config binding ---
     implementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'

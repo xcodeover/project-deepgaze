@@ -1,0 +1,84 @@
+# DeepGaze 1.0 — production-style local deploy.
+#
+#   docker compose up -d --build      # bring the stack up
+#   docker compose logs -f backend    # tail the backend
+#   docker compose down               # stop & remove (volume survives)
+#   docker compose down -v            # also wipe 48h of Time Machine history
+#
+# Topology:
+#
+#   [ browser ]  ──▶  :80  nginx (frontend)  ──▶  backend:8080  (compose net)
+#                                                  │
+#                                                  └──▶  /app/data  (named volume)
+#                                                         └─ deepgaze-history.db (+ -wal, -shm)
+#
+# The backend port is NOT published to the host — all traffic reaches it
+# through the frontend's reverse proxy. Uncomment the `ports:` block on the
+# backend service if you need direct curl/Actuator access from the host.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: deepgaze/backend:1.0
+    container_name: deepgaze-backend
+    restart: unless-stopped
+    environment:
+      TZ: UTC
+      # Let the JVM see the container's cgroup limit and size the heap to 75 %.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75 -Djava.security.egd=file:/dev/./urandom"
+      # Promote any profile you need (e.g. `prod`) without rebuilding.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      # AES-GCM key for on-disk target-store password encryption. Required for
+      # any Fleet Management mutation; without it, POST/PUT /api/targets returns
+      # 500 from PasswordCipher. Set in your shell or .env before `up -d`.
+      DEEPGAZE_SECRET_KEY: ${DEEPGAZE_SECRET_KEY}
+      DEEPGAZE_ADMIN_PASSWORD: ${DEEPGAZE_ADMIN_PASSWORD}
+    volumes:
+      # 48 h of SQLite history — the .db, .db-wal, and .db-shm sidecars all
+      # land here. The named volume inherits /app/data's ownership
+      # (uid 1000:1000, the `deepgaze` user) on first creation.
+      - deepgaze-data:/app/data
+      # Local credentials (MARIA_PWD / ORACLE_PWD / MSSQL_PWD / *_OPS_PWD /
+      # TELEGRAM_* / DEEPGAZE_OPS_TOKEN). Read-only bind-mount keeps secrets
+      # out of the image and lets you rotate without rebuilding.
+      - ./backend/application-local.yml:/app/application-local.yml:ro
+    expose:
+      - "8080"
+    # Uncomment to publish the backend directly on the host.
+    # ports:
+    #   - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+    networks:
+      - deepgaze-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: deepgaze/frontend:1.0
+    container_name: deepgaze-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        # Wait for /actuator/health to report UP before accepting traffic,
+        # so the first /api hit doesn't 502.
+        condition: service_healthy
+    ports:
+      - "80:80"
+    networks:
+      - deepgaze-net
+
+volumes:
+  deepgaze-data:
+    driver: local
+
+networks:
+  deepgaze-net:
+    driver: bridge

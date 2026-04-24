@@ -33,6 +33,36 @@ public final class HikariPoolFactory {
     }
 
     /**
+     * Build the dedicated ops pool for {@link com.deepgaze.ops.KillCommandService}.
+     * Intentionally tiny: this pool only executes rare administrative commands
+     * (KILL) and should never grow large enough to compete with the monitoring
+     * pool for server-side resources. Writable (readOnly=false) because KILL
+     * is a mutation from the server's perspective.
+     */
+    public static HikariDataSource buildOps(DbTargetConfig target) {
+        HikariConfig cfg = new HikariConfig();
+        cfg.setPoolName("hk-ops-" + target.id());
+        cfg.setJdbcUrl(target.jdbcUrl());
+        cfg.setUsername(target.ops().username());
+        cfg.setPassword(target.ops().password());
+
+        cfg.setMaximumPoolSize(2);
+        cfg.setMinimumIdle(0);
+        cfg.setConnectionTimeout(target.hikari().connectionTimeoutMs());
+        cfg.setIdleTimeout(30_000);
+        cfg.setMaxLifetime(300_000);
+        cfg.setValidationTimeout(target.hikari().validationTimeoutMs());
+
+        cfg.setAutoCommit(true);
+        cfg.setReadOnly(false);
+        cfg.setRegisterMbeans(true);
+
+        applyNetworkTimeouts(cfg, target);
+
+        return new HikariDataSource(cfg);
+    }
+
+    /**
      * Driver-level network timeouts are mandatory: Hikari's connectionTimeout
      * only governs pool-wait time, and Statement.setQueryTimeout requires the
      * server to respond. A blackholed socket bypasses both.

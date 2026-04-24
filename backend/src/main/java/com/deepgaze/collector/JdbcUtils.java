@@ -45,6 +45,7 @@ public final class JdbcUtils {
             try (ResultSet rs = s.executeQuery(sql)) {
                 return new MetricSnapshot(
                         target.id(),
+                        target.displayName(),
                         target.type(),
                         Instant.now(),
                         group,

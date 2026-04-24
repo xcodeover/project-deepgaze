@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Purpose: attach a TurboFilter that silences "SSE client went away" noise
+  (Broken pipe / AsyncRequestNotUsableException / IllegalStateException from
+  AsyncContext after error). Everything else stays on Spring Boot's defaults —
+  `logging.level.*` from application.yml continues to apply because Spring
+  Boot reinitialises logger levels from the environment after this file is
+  parsed.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+  <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+  <turboFilter class="com.deepgaze.config.ClientDisconnectNoiseFilter"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>

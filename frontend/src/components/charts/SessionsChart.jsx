@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import ReactECharts from 'echarts-for-react';
+import ResponsiveECharts from './ResponsiveECharts.jsx';
 import { pick } from '../../lib/rowAccess.js';
 
 /**
@@ -7,24 +7,24 @@ import { pick } from '../../lib/rowAccess.js';
  * Pure presentational — receives raw snapshots as a prop, derives ECharts
  * option via useMemo, and renders. Knows nothing about the store.
  */
-export default function SessionsChart({ snapshots }) {
-  const option = useMemo(() => buildOption(snapshots), [snapshots]);
+export default function SessionsChart({ snapshots, title = 'Sessions by Status' }) {
+  const option = useMemo(() => buildOption(snapshots, title), [snapshots, title]);
 
   if (!snapshots.length) {
     return <div className="placeholder">No session data yet.</div>;
   }
 
   return (
-    <ReactECharts
+    <ResponsiveECharts
       option={option}
-      style={{ height: 280 }}
+      style={{ height: '100%', width: '100%' }}
       notMerge
       lazyUpdate
     />
   );
 }
 
-function buildOption(snapshots) {
+function buildOption(snapshots, title) {
   const statusSet = new Set();
   const points = snapshots.map((snap) => {
     const byStatus = {};
@@ -49,7 +49,7 @@ function buildOption(snapshots) {
   }));
 
   return baseOption({
-    title: 'Sessions by Status',
+    title,
     series,
     yAxisName: 'count',
   });
@@ -58,12 +58,16 @@ function buildOption(snapshots) {
 function baseOption({ title, series, yAxisName }) {
   return {
     backgroundColor: 'transparent',
-    title: { text: title, left: 'left', textStyle: { color: '#e6e9ef', fontSize: 13, fontWeight: 500 } },
+    title: { text: title, left: 'left', textStyle: { color: '#e6e9ef', fontSize: 11, fontWeight: 500 } },
     tooltip: { trigger: 'axis' },
-    legend: { type: 'scroll', bottom: 0, textStyle: { color: '#8a93a6' } },
-    grid: { left: 50, right: 20, top: 40, bottom: 40 },
-    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6' } },
-    yAxis: { type: 'value', name: yAxisName, axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6' }, splitLine: { lineStyle: { color: '#262c3b' } } },
+    legend: {
+      type: 'scroll', top: 2, right: 8,
+      itemWidth: 10, itemHeight: 8, itemGap: 10,
+      textStyle: { color: '#8a93a6', fontSize: 10 },
+    },
+    grid: { left: 44, right: 12, top: 28, bottom: 26 },
+    xAxis: { type: 'time', axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6', fontSize: 10 } },
+    yAxis: { type: 'value', name: yAxisName, nameTextStyle: { color: '#8a93a6', fontSize: 10 }, axisLine: { lineStyle: { color: '#262c3b' } }, axisLabel: { color: '#8a93a6', fontSize: 10 }, splitLine: { lineStyle: { color: '#262c3b' } } },
     series,
     animation: false,
   };
